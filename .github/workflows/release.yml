@@ -1,0 +1,68 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: gitid
+            asset_name: gitid-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: gitid
+            asset_name: gitid-linux-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: gitid
+            asset_name: gitid-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: gitid
+            asset_name: gitid-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: gitid.exe
+            asset_name: gitid-windows-x86_64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build Release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          name: Release ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crates-io:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: build-and-release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true
