@@ -1,0 +1,15 @@
+[package]
+name = "gitid"
+version = "0.1.0"
+edition = "2024"
+description = "A CLI tool for managing multiple Git identities across GitHub and GitLab"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+anyhow = "1"
+thiserror = "1"
+colored = "2"
+inquire = "0.7"
