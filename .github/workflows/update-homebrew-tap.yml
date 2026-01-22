@@ -1,0 +1,59 @@
+name: Update Homebrew Tap
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout gitid repo
+        uses: actions/checkout@v4
+
+      - name: Get release info
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          TARBALL_URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          echo "tarball_url=${TARBALL_URL}" >> $GITHUB_OUTPUT
+
+          # Download and calculate SHA256
+          curl -L "${TARBALL_URL}" -o "/tmp/${TAG}.tar.gz"
+          SHA256=$(shasum -a 256 "/tmp/${TAG}.tar.gz" | cut -d' ' -f1)
+          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
+
+      - name: Checkout tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-gitid
+          token: ${{ secrets.TAP_REPO_TOKEN }}
+          path: tap-repo
+
+      - name: Update formula
+        env:
+          TARBALL_URL: ${{ steps.release.outputs.tarball_url }}
+          SHA256: ${{ steps.release.outputs.sha256 }}
+        run: |
+          FORMULA_FILE="tap-repo/Formula/gitid.rb"
+
+          # Update the formula
+          sed -i "s|url \".*\"|url \"${TARBALL_URL}\"|" "${FORMULA_FILE}"
+          sed -i "s/sha256 \"[^\"]*\"/sha256 \"${SHA256}\"/" "${FORMULA_FILE}"
+
+      - name: Commit and push to tap
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          cd tap-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/gitid.rb
+          git commit -m "Update gitid to ${TAG}" || echo "No changes to commit"
+          git push
