@@ -1,6 +1,6 @@
 [package]
 name = "gitid"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A CLI tool for managing multiple Git identities across GitHub and GitLab"
 
