@@ -497,6 +497,23 @@ cargo test
 cargo run -- --help
 ```
 
+### Pre-commit Hooks (Rust checks)
+
+This repo includes `.pre-commit-config.yaml` with Rust-focused hooks:
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+
+Install and enable:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+This installs both `pre-commit` and `pre-push` hooks (backup enforcement).
+Commits and pushes will fail unless formatting, linting, and tests pass.
+
 ## Architecture
 
 - **config.rs** - Configuration management and persistence

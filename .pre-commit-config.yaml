@@ -1,0 +1,37 @@
+minimum_pre_commit_version: "3.0.0"
+default_stages: [pre-commit]
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+        always_run: true
+
+      - id: cargo-clippy
+        name: cargo clippy (deny warnings)
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+        always_run: true
+
+      - id: cargo-test
+        name: cargo test (all)
+        entry: cargo test --all-targets --all-features
+        language: system
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+        always_run: true
