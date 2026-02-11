@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::process::Command;
 
 /// Scope for git config operations
@@ -119,6 +119,25 @@ impl RemoteUrl {
             });
         }
 
+        // SSH scheme format: ssh://git@github.com/owner/repo.git
+        if let Some(without_scheme) = url.strip_prefix("ssh://") {
+            let host_port = without_scheme.split('/').next()?;
+            let host_port = host_port
+                .rsplit_once('@')
+                .map(|(_, h)| h)
+                .unwrap_or(host_port);
+            let host = host_port
+                .split_once(':')
+                .map(|(h, _)| h)
+                .unwrap_or(host_port);
+            if host.is_empty() {
+                return None;
+            }
+            return Some(RemoteUrl {
+                host: host.to_string(),
+            });
+        }
+
         // HTTPS format: https://github.com/owner/repo.git
         if url.starts_with("https://") || url.starts_with("http://") {
             let without_scheme = url
@@ -188,5 +207,17 @@ mod tests {
     fn test_parse_ssh_url_with_alias() {
         let url = RemoteUrl::parse("git@github-work:company/project.git").unwrap();
         assert_eq!(url.host, "github-work");
+    }
+
+    #[test]
+    fn test_parse_ssh_scheme_url() {
+        let url = RemoteUrl::parse("ssh://git@github.com/owner/repo.git").unwrap();
+        assert_eq!(url.host, "github.com");
+    }
+
+    #[test]
+    fn test_parse_ssh_scheme_url_with_port() {
+        let url = RemoteUrl::parse("ssh://git@gitlab.company.com:2222/group/repo.git").unwrap();
+        assert_eq!(url.host, "gitlab.company.com");
     }
 }

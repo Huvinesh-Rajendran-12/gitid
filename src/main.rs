@@ -5,17 +5,24 @@ mod detect;
 mod git;
 mod profile;
 mod prompt;
+#[allow(dead_code)]
+mod scm;
 mod ssh;
 mod ssh_keys;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, ScmCiCommands, ScmCommands, ScmIssueCommands, ScmReviewCommands};
 use colored::Colorize;
 use config::Config;
 use git::ConfigScope;
 use inquire::{Confirm, Select, Text};
 use profile::{Platform, Profile};
+use scm::detect::detect_from_repo_origin;
+use scm::github::GitHubProvider;
+use scm::gitlab::GitLabProvider;
+use scm::provider::{ScmError, ScmProvider};
+use scm::types::ProviderKind;
 
 fn main() {
     if let Err(e) = run() {
@@ -49,6 +56,7 @@ fn run() -> Result<()> {
         Commands::Current { porcelain } => cmd_current(porcelain),
         Commands::Detect { auto } => cmd_detect(auto),
         Commands::SshSync => cmd_ssh_sync(),
+        Commands::Scm { command } => cmd_scm(command),
     }
 }
 
@@ -246,8 +254,7 @@ fn cmd_remove(name: Option<String>, force: bool, clean_ssh: bool) -> Result<()> 
         Some(n) => n,
         None => {
             let profiles: Vec<String> = config.profile_names().into_iter().cloned().collect();
-            Select::new("Select profile to remove:", profiles)
-                .prompt()?
+            Select::new("Select profile to remove:", profiles).prompt()?
         }
     };
 
@@ -408,10 +415,7 @@ fn cmd_auth(name: Option<String>) -> Result<()> {
         .get_profile(&name)
         .context(format!("Profile '{}' not found", name))?;
 
-    println!(
-        "Authenticating CLI tools for profile '{}'...",
-        name.cyan()
-    );
+    println!("Authenticating CLI tools for profile '{}'...", name.cyan());
     println!();
 
     auth::authenticate(&name, profile)?;
@@ -519,11 +523,7 @@ fn cmd_detect(auto: bool) -> Result<()> {
                             profile.gpg_key.as_deref(),
                             ConfigScope::Local,
                         )?;
-                        println!(
-                            "{} Applied profile '{}'",
-                            "Success:".green().bold(),
-                            name
-                        );
+                        println!("{} Applied profile '{}'", "Success:".green().bold(), name);
                     }
                 }
             }
@@ -531,6 +531,206 @@ fn cmd_detect(auto: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn cmd_scm(command: ScmCommands) -> Result<()> {
+    match command {
+        ScmCommands::Status => cmd_scm_status(),
+        ScmCommands::Issue { command } => cmd_scm_issue(command),
+        ScmCommands::Review { command } => cmd_scm_review(command),
+        ScmCommands::Ci { command } => cmd_scm_ci(command),
+    }
+}
+
+fn cmd_scm_issue(command: ScmIssueCommands) -> Result<()> {
+    match command {
+        ScmIssueCommands::List => cmd_scm_issue_list(),
+    }
+}
+
+fn cmd_scm_review(command: ScmReviewCommands) -> Result<()> {
+    match command {
+        ScmReviewCommands::List => cmd_scm_review_list(),
+    }
+}
+
+fn cmd_scm_ci(command: ScmCiCommands) -> Result<()> {
+    match command {
+        ScmCiCommands::List => cmd_scm_ci_list(),
+    }
+}
+
+fn get_provider_context() -> Result<(ProviderKind, String)> {
+    detect_from_repo_origin().context(
+        "Could not detect provider from 'origin' remote. Ensure you're in a git repo with origin.",
+    )
+}
+
+fn cmd_scm_status() -> Result<()> {
+    let (kind, remote) = get_provider_context()?;
+
+    println!("Remote: {}", remote);
+
+    match kind {
+        ProviderKind::Github => print_auth_status(GitHubProvider, "github", "gh"),
+        ProviderKind::Gitlab => print_auth_status(GitLabProvider, "gitlab", "glab"),
+        ProviderKind::Unknown => bail!("Unsupported provider in origin remote"),
+    }
+}
+
+fn print_auth_status<P: ScmProvider>(provider: P, label: &str, cli: &str) -> Result<()> {
+    println!("Provider: {} ({})", label, cli);
+    match provider.auth_status() {
+        Ok(status) => {
+            println!(
+                "Authenticated: {}",
+                if status.authenticated { "yes" } else { "no" }
+            );
+            if let Some(host) = status.host {
+                println!("Host: {}", host);
+            }
+            Ok(())
+        }
+        Err(ScmError::NotAuthenticated(_)) => {
+            println!("Authenticated: no");
+            println!("Next: {} auth login", cli);
+            Ok(())
+        }
+        Err(e) => Err(map_scm_err(e, cli)),
+    }
+}
+
+fn ensure_authenticated<P: ScmProvider>(provider: P, cli: &str) -> Result<()> {
+    match provider.auth_status() {
+        Ok(status) if status.authenticated => Ok(()),
+        Ok(_) | Err(ScmError::NotAuthenticated(_)) => {
+            bail!("Not authenticated. Run: {} auth login", cli)
+        }
+        Err(e) => Err(map_scm_err(e, cli)),
+    }
+}
+
+fn cmd_scm_issue_list() -> Result<()> {
+    let (kind, _) = get_provider_context()?;
+
+    let issues = match kind {
+        ProviderKind::Github => {
+            ensure_authenticated(GitHubProvider, "gh")?;
+            GitHubProvider
+                .list_issues()
+                .map_err(|e| map_scm_err(e, "gh"))?
+        }
+        ProviderKind::Gitlab => {
+            ensure_authenticated(GitLabProvider, "glab")?;
+            GitLabProvider
+                .list_issues()
+                .map_err(|e| map_scm_err(e, "glab"))?
+        }
+        ProviderKind::Unknown => bail!("Unsupported provider in origin remote"),
+    };
+
+    print_issues(&issues);
+    Ok(())
+}
+
+fn cmd_scm_review_list() -> Result<()> {
+    let (kind, _) = get_provider_context()?;
+
+    let reviews = match kind {
+        ProviderKind::Github => {
+            ensure_authenticated(GitHubProvider, "gh")?;
+            GitHubProvider
+                .list_reviews()
+                .map_err(|e| map_scm_err(e, "gh"))?
+        }
+        ProviderKind::Gitlab => {
+            ensure_authenticated(GitLabProvider, "glab")?;
+            GitLabProvider
+                .list_reviews()
+                .map_err(|e| map_scm_err(e, "glab"))?
+        }
+        ProviderKind::Unknown => bail!("Unsupported provider in origin remote"),
+    };
+
+    print_reviews(&reviews);
+    Ok(())
+}
+
+fn cmd_scm_ci_list() -> Result<()> {
+    let (kind, _) = get_provider_context()?;
+
+    let pipelines = match kind {
+        ProviderKind::Github => {
+            ensure_authenticated(GitHubProvider, "gh")?;
+            GitHubProvider
+                .list_pipelines()
+                .map_err(|e| map_scm_err(e, "gh"))?
+        }
+        ProviderKind::Gitlab => {
+            ensure_authenticated(GitLabProvider, "glab")?;
+            GitLabProvider
+                .list_pipelines()
+                .map_err(|e| map_scm_err(e, "glab"))?
+        }
+        ProviderKind::Unknown => bail!("Unsupported provider in origin remote"),
+    };
+
+    print_pipelines(&pipelines);
+    Ok(())
+}
+
+fn print_issues(issues: &[scm::types::Issue]) {
+    if issues.is_empty() {
+        println!("No issues found");
+        return;
+    }
+    for i in issues {
+        println!("#{} [{}] {}", i.id, i.state, i.title);
+        if let Some(url) = &i.url {
+            println!("  {}", url);
+        }
+    }
+}
+
+fn print_reviews(reviews: &[scm::types::Review]) {
+    if reviews.is_empty() {
+        println!("No reviews found");
+        return;
+    }
+    for r in reviews {
+        println!("#{} [{}] {}", r.id, r.state, r.title);
+        if let Some(url) = &r.url {
+            println!("  {}", url);
+        }
+    }
+}
+
+fn print_pipelines(pipelines: &[scm::types::Pipeline]) {
+    if pipelines.is_empty() {
+        println!("No pipelines found");
+        return;
+    }
+    for p in pipelines {
+        let conclusion = p
+            .conclusion
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-");
+        println!("#{} [{} / {}]", p.id, p.status, conclusion);
+        if let Some(url) = &p.url {
+            println!("  {}", url);
+        }
+    }
+}
+
+fn map_scm_err(err: ScmError, cli: &str) -> anyhow::Error {
+    match err {
+        ScmError::NotAuthenticated(_) => {
+            anyhow::anyhow!("Not authenticated. Run: {} auth login", cli)
+        }
+        ScmError::CliMissing(_) => anyhow::anyhow!("{} CLI not installed", cli),
+        _ => anyhow::anyhow!(err.to_string()),
+    }
 }
 
 fn cmd_ssh_sync() -> Result<()> {

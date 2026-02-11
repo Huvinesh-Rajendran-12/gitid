@@ -2,7 +2,11 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "gitid")]
-#[command(author, version, about = "Manage multiple Git identities across GitHub and GitLab")]
+#[command(
+    author,
+    version,
+    about = "Manage multiple Git identities across GitHub and GitLab"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -93,4 +97,52 @@ pub enum Commands {
     /// Sync SSH config with all profiles
     #[command(name = "ssh-sync")]
     SshSync,
+
+    /// Direct SCM operations via gh/glab
+    Scm {
+        #[command(subcommand)]
+        command: ScmCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScmCommands {
+    /// Show provider detection and auth status
+    Status,
+
+    /// Issue operations
+    Issue {
+        #[command(subcommand)]
+        command: ScmIssueCommands,
+    },
+
+    /// Review operations (PR/MR)
+    Review {
+        #[command(subcommand)]
+        command: ScmReviewCommands,
+    },
+
+    /// CI operations
+    Ci {
+        #[command(subcommand)]
+        command: ScmCiCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScmIssueCommands {
+    /// List issues
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum ScmReviewCommands {
+    /// List reviews (PR/MR)
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum ScmCiCommands {
+    /// List CI pipelines/runs
+    List,
 }
