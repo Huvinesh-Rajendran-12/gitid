@@ -12,7 +12,9 @@ mod ssh_keys;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use cli::{Cli, Commands, ScmCiCommands, ScmCommands, ScmIssueCommands, ScmReviewCommands};
+use cli::{
+    AuthCommands, Cli, Commands, ScmCiCommands, ScmCommands, ScmIssueCommands, ScmReviewCommands,
+};
 use colored::Colorize;
 use config::Config;
 use git::ConfigScope;
@@ -52,7 +54,10 @@ fn run() -> Result<()> {
         } => cmd_remove(name, force, clean_ssh),
         Commands::List => cmd_list(),
         Commands::Use { name, global } => cmd_use(name, global),
-        Commands::Auth { name } => cmd_auth(name),
+        Commands::Auth { command } => match command {
+            AuthCommands::Login { name } => cmd_auth(name),
+            AuthCommands::Status => cmd_auth_status(),
+        },
         Commands::Current { porcelain } => cmd_current(porcelain),
         Commands::Detect { auto } => cmd_detect(auto),
         Commands::SshSync => cmd_ssh_sync(),
@@ -428,6 +433,201 @@ fn cmd_auth(name: Option<String>) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn cmd_auth_status() -> Result<()> {
+    use std::collections::HashMap;
+
+    let config = Config::load()?;
+
+    if config.profiles.is_empty() {
+        bail!("No profiles configured. Run 'gitid add' first.");
+    }
+
+    // Check which platforms are needed
+    let needs_gh = config.profile_names().iter().any(|n| {
+        config
+            .get_profile(n)
+            .is_some_and(|p| matches!(p.platform, Platform::Github | Platform::Both))
+    });
+    let needs_glab = config.profile_names().iter().any(|n| {
+        config
+            .get_profile(n)
+            .is_some_and(|p| matches!(p.platform, Platform::Gitlab | Platform::Both))
+    });
+
+    // Fetch auth state once per CLI tool, keyed by host
+    let gh_hosts = if needs_gh {
+        fetch_gh_hosts()
+    } else {
+        GhAuthResult::Hosts(HashMap::new())
+    };
+    let glab_status = if needs_glab {
+        fetch_glab_status()
+    } else {
+        GlabAuthResult::Status {
+            authenticated: false,
+            host: None,
+        }
+    };
+
+    // Compute column widths
+    let names: Vec<&String> = config.profile_names().into_iter().collect();
+    let name_w = names.iter().map(|n| n.len()).max().unwrap_or(7).max(7);
+    let plat_w = 8;
+
+    println!(
+        "{:<name_w$}  {:<plat_w$}  {:<20}  Authenticated",
+        "Profile", "Platform", "Host",
+        name_w = name_w,
+        plat_w = plat_w,
+    );
+
+    for name in &names {
+        let profile = match config.get_profile(name) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let host = profile.default_host();
+        let platform_str = format!("{}", profile.platform);
+
+        let auth_cell = match profile.platform {
+            Platform::Github => format_gh_auth(&gh_hosts, host),
+            Platform::Gitlab => format_glab_auth(&glab_status, host),
+            Platform::Both => {
+                let gh = format_gh_auth(&gh_hosts, host);
+                let gl = format_glab_auth(&glab_status, host);
+                format!("gh: {} | glab: {}", gh, gl)
+            }
+        };
+
+        println!(
+            "{:<name_w$}  {:<plat_w$}  {:<20}  {}",
+            name.cyan(),
+            platform_str,
+            host,
+            auth_cell,
+            name_w = name_w,
+            plat_w = plat_w,
+        );
+    }
+
+    Ok(())
+}
+
+/// Cached GitHub auth: map of host → username
+enum GhAuthResult {
+    Hosts(std::collections::HashMap<String, Option<String>>),
+    NotInstalled,
+    Error,
+}
+
+/// Cached GitLab auth
+enum GlabAuthResult {
+    Status {
+        authenticated: bool,
+        host: Option<String>,
+    },
+    NotInstalled,
+    Error,
+}
+
+fn fetch_gh_hosts() -> GhAuthResult {
+    use std::collections::HashMap;
+
+    match scm::command::run("gh", &["auth", "status", "--json", "hosts"]) {
+        Ok(out) => {
+            let v: serde_json::Value = match serde_json::from_str(&out.stdout) {
+                Ok(v) => v,
+                Err(_) => return GhAuthResult::Hosts(HashMap::new()),
+            };
+            let mut hosts = HashMap::new();
+            if let Some(obj) = v.get("hosts").and_then(|h| h.as_object()) {
+                for (host, entry) in obj {
+                    let user = entry
+                        .get("user")
+                        .and_then(|u| u.as_str())
+                        .map(str::to_string);
+                    hosts.insert(host.clone(), user);
+                }
+            }
+            GhAuthResult::Hosts(hosts)
+        }
+        Err(ScmError::CliMissing(_)) => GhAuthResult::NotInstalled,
+        Err(ScmError::CommandFailed(msg)) => {
+            let m = msg.to_lowercase();
+            if m.contains("not logged") || m.contains("authenticate") {
+                GhAuthResult::Hosts(std::collections::HashMap::new())
+            } else {
+                GhAuthResult::Error
+            }
+        }
+        Err(_) => GhAuthResult::Error,
+    }
+}
+
+fn fetch_glab_status() -> GlabAuthResult {
+    match scm::command::run("glab", &["auth", "status"]) {
+        Ok(out) => {
+            let text = format!("{}\n{}", out.stdout, out.stderr);
+            let authenticated = !text.to_lowercase().contains("not logged");
+            let host = text
+                .lines()
+                .find_map(|l| l.split("Host:").nth(1))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            GlabAuthResult::Status {
+                authenticated,
+                host,
+            }
+        }
+        Err(ScmError::CliMissing(_)) => GlabAuthResult::NotInstalled,
+        Err(ScmError::CommandFailed(msg)) => {
+            let m = msg.to_lowercase();
+            if m.contains("not logged") || m.contains("authenticate") {
+                GlabAuthResult::Status {
+                    authenticated: false,
+                    host: None,
+                }
+            } else {
+                GlabAuthResult::Error
+            }
+        }
+        Err(_) => GlabAuthResult::Error,
+    }
+}
+
+fn format_gh_auth(result: &GhAuthResult, host: &str) -> String {
+    match result {
+        GhAuthResult::Hosts(hosts) => match hosts.get(host) {
+            Some(Some(user)) => format!("{}", format!("yes ({})", user).green()),
+            Some(None) => format!("{}", "yes".green()),
+            None => format!("{}", "no".red()),
+        },
+        GhAuthResult::NotInstalled => "not installed".dimmed().to_string(),
+        GhAuthResult::Error => format!("{}", "error".red()),
+    }
+}
+
+fn format_glab_auth(result: &GlabAuthResult, host: &str) -> String {
+    match result {
+        GlabAuthResult::Status {
+            authenticated,
+            host: auth_host,
+        } => {
+            let host_matches = auth_host
+                .as_ref()
+                .map_or(*authenticated, |h| h == host);
+            if *authenticated && host_matches {
+                format!("{}", "yes".green())
+            } else {
+                format!("{}", "no".red())
+            }
+        }
+        GlabAuthResult::NotInstalled => "not installed".dimmed().to_string(),
+        GlabAuthResult::Error => format!("{}", "error".red()),
+    }
 }
 
 fn cmd_current(porcelain: bool) -> Result<()> {

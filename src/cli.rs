@@ -76,8 +76,8 @@ pub enum Commands {
 
     /// Authenticate CLI tools (gh/glab) for a profile
     Auth {
-        /// Profile name to authenticate (interactive if not provided)
-        name: Option<String>,
+        #[command(subcommand)]
+        command: AuthCommands,
     },
 
     /// Show current active profile
@@ -103,6 +103,17 @@ pub enum Commands {
         #[command(subcommand)]
         command: ScmCommands,
     },
+}
+
+#[derive(Subcommand)]
+pub enum AuthCommands {
+    /// Authenticate CLI tools (gh/glab) for a profile
+    Login {
+        /// Profile name to authenticate (interactive if not provided)
+        name: Option<String>,
+    },
+    /// Show authentication status for all profiles
+    Status,
 }
 
 #[derive(Subcommand)]
